@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from model_loader import load_scaler
-from encoding import arrival_mode_mapping
+from feature_processing import arrival_mode_mapping
 
 @st.cache_data
 def load_causal_effects():
