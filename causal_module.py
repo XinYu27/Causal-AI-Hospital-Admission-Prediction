@@ -5,6 +5,11 @@ from model_loader import load_scaler
 from feature_processing import arrival_mode_mapping
 
 @st.cache_data
+def get_model_prediction(_model, df):
+    probabilities = _model.predict_proba(df)
+    return probabilities[0][1]
+
+@st.cache_data
 def load_causal_effects():
     data = {
         'Feature': [
@@ -20,14 +25,14 @@ def load_causal_effects():
             'triage_vital_sbp', 'cc_endocrine_diseases'
         ],
         'Causal Effect': [
-            0.6548768278194967, 0.640449438202247, -0.366666666666666,
-            -0.36146452447260646, -0.35999999999999954, -0.29123089300080407,
-            -0.25387105826880174, 0.211312518786675, 0.1751599905190806,
-            0.12379149226411262, 0.10526800423337235, 0.07346919371322846,
-            -0.06912442396313373, 0.06601731601731614, -0.034722414115235745,
-            -0.017967278863523783, -0.013121513529256945, 0.012849167852241106,
-            0.006745588158942217, -0.005887899165885946, 0.005560075619394922,
-            1.6653345369377348e-16
+            0.655, 0.640, -0.367,
+            -0.361, -0.360, -0.291,
+            -0.254, 0.211, 0.175,
+            0.124, 0.105, 0.073,
+            -0.069, 0.066, -0.035,
+            -0.018, -0.013, 0.013,
+            0.007, -0.006, 0.006,
+            0.001
         ],
     }
 
@@ -42,22 +47,13 @@ def load_causal_effects():
     return df
 
 def calculate_individual_treatment_effects(model, input_df, features_to_analyze, continuous_features, arrival_time_bin=None):
-    """
-    Calculate individual treatment effects by comparing feature states directly
-    rather than relative to base prediction.
-    
-    Parameters:
-    - model: trained model
-    - input_df: DataFrame with input features
-    - features_to_analyze: list of features to analyze
-    - continuous_features: list of continuous features
-    - arrival_time_bin: string, the arrival time bin from the UI (optional)
-    """
+
     individual_effects = []
     scaler = load_scaler()
 
     reverse_arrival_mode = {v: k for k, v in arrival_mode_mapping.items()}
-
+    time_bins = ['23-02', '03-06', '07-10', '11-14', '15-18', '19-22']
+    time_bin_indices = {bin: idx for idx, bin in enumerate(time_bins)}
     if 'esi' in input_df.columns:
         input_df['esi'] = pd.to_numeric(input_df['esi'], errors='coerce')
     
@@ -66,30 +62,28 @@ def calculate_individual_treatment_effects(model, input_df, features_to_analyze,
             continue
             
         original_value = input_df[feature].iloc[0]
-        if pd.isna(original_value):
+        if pd.isna(original_value) or original_value is None:
             continue
             
         try:
             modified_df = input_df.copy()
             
             if feature == 'esi':
-                # ESI calculation remains the same
-                modified_df[feature] = 1
-                high_acuity_pred = model.predict_proba(modified_df)[0][1]
-                modified_df[feature] = 5
-                low_acuity_pred = model.predict_proba(modified_df)[0][1]
+                modified_df.loc[:, feature] = 1
+                high_acuity_pred = get_model_prediction(model, modified_df)
+                modified_df.loc[:, feature] = 5
+                low_acuity_pred = get_model_prediction(model, modified_df)
                 effect_size = (high_acuity_pred - low_acuity_pred) / 4
                 confidence_interval = 0.05
 
             elif feature == 'arrivalmode':
-                # Arrival mode calculation remains the same
                 original_text = reverse_arrival_mode.get(original_value, "Unknown")
                 baseline_pred = model.predict_proba(modified_df)[0][1]
                 
                 effects = []
                 for mode_value in arrival_mode_mapping.values():
                     if mode_value != original_value:
-                        modified_df[feature] = mode_value
+                        modified_df.loc[:, feature] = int(mode_value)
                         new_pred = model.predict_proba(modified_df)[0][1]
                         effects.append(new_pred - baseline_pred)
                 
@@ -98,15 +92,13 @@ def calculate_individual_treatment_effects(model, input_df, features_to_analyze,
                 original_value = original_text
 
             elif feature == 'arrivalhour_bin_sin':
-                # Now using passed arrival_time_bin parameter
                 if arrival_time_bin is None or arrival_time_bin == "Unknown":
                     continue
                     
                 time_bins = ['23-02', '03-06', '07-10', '11-14', '15-18', '19-22']
                 
-                # Baseline prediction with original time bin
                 baseline_df = modified_df.copy()
-                baseline_df['arrivalhour_bin_sin'] = np.sin(time_bins.index(arrival_time_bin) / 6 * 2 * np.pi)
+                baseline_df['arrivalhour_bin_sin'] = np.sin(time_bin_indices[arrival_time_bin] / 6 * 2 * np.pi)
                 baseline_pred = model.predict_proba(baseline_df)[0][1]
                 
                 effect_sizes = []
@@ -115,42 +107,41 @@ def calculate_individual_treatment_effects(model, input_df, features_to_analyze,
                         continue
                     
                     temp_df = modified_df.copy()
-                    temp_df['arrivalhour_bin_sin'] = np.sin(time_bins.index(new_time_bin) / 6 * 2 * np.pi)
+                    temp_df['arrivalhour_bin_sin'] = np.sin(time_bin_indices[new_time_bin] / 6 * 2 * np.pi)
                     new_pred = model.predict_proba(temp_df)[0][1]
                     effect_sizes.append(new_pred - baseline_pred)
                 
                 effect_size = np.mean(effect_sizes)
-                confidence_interval = 0.05
+                confidence_interval = np.std(effect_sizes)*1.96/np.sqrt(len(effect_sizes))
                 original_value = arrival_time_bin
 
             elif feature in continuous_features:
-                # Continuous features calculation remains the same
                 std_dev = scaler.scale_[list(scaler.feature_names_in_).index(feature)]
                 
-                modified_df[feature] = original_value + std_dev
+                modified_df.loc[:, feature] = original_value + std_dev
                 increased_pred = model.predict_proba(modified_df)[0][1]
                 
-                modified_df[feature] = original_value - std_dev
+                modified_df.loc[:, feature] = original_value - std_dev
                 decreased_pred = model.predict_proba(modified_df)[0][1]
                 
                 effect_size = (increased_pred - decreased_pred) / 2
                 confidence_interval = abs(increased_pred - decreased_pred) * 0.1
                 
-            else:  # Binary features calculation remains the same
+            else:
                 original_value = input_df[feature].iloc[0]
                 if original_value == 1:
-                    modified_df[feature] = 0
+                    modified_df.loc[:, feature] = 0
                     absent_pred = model.predict_proba(modified_df)[0][1]
 
-                    modified_df[feature] = 1
+                    modified_df.loc[:, feature] = 1
                     present_pred = model.predict_proba(modified_df)[0][1]
                     
                     effect_size = absent_pred - present_pred
                 else: 
-                    modified_df[feature] = 1
+                    modified_df.loc[:, feature] = 1
                     present_pred = model.predict_proba(modified_df)[0][1]
 
-                    modified_df[feature] = 0
+                    modified_df.loc[:, feature] = 0
                     absent_pred = model.predict_proba(modified_df)[0][1]
 
                     effect_size = present_pred - absent_pred
@@ -174,7 +165,6 @@ def calculate_individual_treatment_effects(model, input_df, features_to_analyze,
 
 @st.cache_data
 def prepare_causal_effects_data(causal_effects_df, feature_description_mapping):
-    # Add human-readable names
     df = causal_effects_df.copy()
     df["Human-Readable Feature"] = df["Feature"].map(feature_description_mapping).fillna(df["Feature"])
     return df

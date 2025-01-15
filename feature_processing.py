@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+
 # Mappings and Encoders
 arrival_mode_mapping = {
     "Ambulance": 6, "Car": 0, "Walk-in": 4, "Police": 2,
@@ -74,8 +75,11 @@ pmh_category = {
 
 # Feature transformation
 def preprocess_inputs(data):
+
     data = data.copy() 
-    data = data.replace({None: np.nan, "": np.nan})
+    pd.set_option('future.no_silent_downcasting', True)
+
+    data = data.replace({None: np.nan, "": np.nan}).infer_objects(copy=False)
 
     # Encode arrivalmonth, arrivalday, and arrivalhour_bin
     if 'arrival_month' in data.columns and data['arrival_month'].notna().all():
